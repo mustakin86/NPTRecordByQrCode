@@ -349,8 +349,9 @@ import { QrcodeStream } from 'vue-qrcode-reader';
 import { Chart as ChartJS, Title, Tooltip, Legend, BarElement, LineElement, PointElement, CategoryScale, LinearScale } from 'chart.js';
 import ChartDataLabels from 'chartjs-plugin-datalabels';
 import { Bar, Line } from 'vue-chartjs';
-import { dbAPI } from'@/service/npt_qr_code_api.js';
-import { dbAPI as Unit_line_API } from '@/service/unit_line_api.js';
+import { dbAPI } from'@/services/npt_qr_code_api.js';
+import { dbAPI as Unit_line_API } from '@/services/unit_line_api.js';
+import { dbAPI as Problem_Category_API } from '@/services/problem_category_api.js';
 
 ChartJS.register(Title, Tooltip, Legend, BarElement, LineElement, PointElement, CategoryScale, LinearScale, ChartDataLabels);
 
@@ -436,11 +437,13 @@ const parseTotalSecondsFrom12h = (timeStr) => {
   return (hours * 3600) + (minutes * 60) + (seconds || 0);
 };
 
+// --- CORRECTED FUNCTION USING Problem_Category_API ---
 const fetchProblemCategories = async () => {
   try {
-    const data = await dbAPI.getRecords(SHEET_NAME);
+    const data = await Problem_Category_API.getRecords('Problem_Category'); // Adjust table/sheet name parameter if required by your backend
     if (Array.isArray(data) && data.length > 0) {
-      problemCategories.value = [...new Set(data.map(item => item.Type_of_Problem).filter(Boolean))];
+      // Map based on your schema (e.g. item.Problem_Category or item.Name)
+      problemCategories.value = [...new Set(data.map(item => item.Problem_Category || item.Name || item).filter(Boolean))];
     }
   } catch (error) {
     console.error('Failed to fetch problem categories:', error);
@@ -484,6 +487,7 @@ const openScanModal = async () => {
   effectiveManpower.value = '';
   showScanModal.value = true;
   await fetchLineNumbers();
+  await fetchProblemCategories();
 };
 
 const closeScanModal = () => {
@@ -778,7 +782,6 @@ const monthlyMultiLineMinutesChartData = computed(() => buildMultiLineDataset('m
 const monthlyMultiLineTakaChartData = computed(() => buildMultiLineDataset('taka'));
 const monthlyMultiLinePercentageChartData = computed(() => buildMultiLineDataset('percentage'));
 
-// Computed property for Problem vs Lost summary table & chart with problem-wise Lost Pcs
 const summaryProblemVsLostData = computed(() => {
   const problemMap = {};
   records.value.forEach(record => {
