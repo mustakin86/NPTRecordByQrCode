@@ -1,10 +1,13 @@
 const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyx8nt93QvuwFdSUgd6W-rA4S_NbV-EGhulIPqTcO2gVwjqXy_-0MdDqNdiYOMKORoj/exec';
 
 export const dbAPI = {
-  // Fetch existing records for the specified sheet tab
-  async getRecords(sheetKey) {
+  async getRecords(sheetKey, spreadsheetId = '') {
     try {
-      const response = await fetch(`${SCRIPT_URL}?sheet=${sheetKey}`);
+      let url = `${SCRIPT_URL}?sheet=${encodeURIComponent(sheetKey)}`;
+      if (spreadsheetId) {
+        url += `&spreadsheetId=${encodeURIComponent(spreadsheetId)}`;
+      }
+      const response = await fetch(url);
       const result = await response.json();
       if (result.success) {
         return result.data;
@@ -17,21 +20,25 @@ export const dbAPI = {
   },
 
   async getProblemCategories() {
-    const res = await fetch(`${SCRIPT_URL}?action=getProblemCategories`);
-    return await res.json();
+    try {
+      const res = await fetch(`${SCRIPT_URL}?action=getProblemCategories`);
+      const result = await res.json();
+      return result.success ? result.data : [];
+    } catch (error) {
+      console.error('Error fetching problem categories:', error);
+      return [];
+    }
   },
 
-
-  // Save (Create or Delete) record data with sheet context
   async saveRecord(sheetKey, recordData, actionType = 'create') {
     try {
       const response = await fetch(SCRIPT_URL, {
         method: 'POST',
         mode: 'cors',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // Bypasses Apps Script CORS restrictions
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({
           sheet: sheetKey,
-          action: actionType, // 'create' or 'delete'
+          action: actionType,
           payload: recordData
         })
       });
