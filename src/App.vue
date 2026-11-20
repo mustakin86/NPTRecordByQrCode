@@ -1,16 +1,22 @@
 <template>
   <div class="dashboard-container">
+    <!-- Non-blocking Status Toast / Banner -->
+    <div v-if="statusBanner.message" class="status-banner" :class="`status-${statusBanner.type}`" role="status">
+      <span>{{ statusBanner.message }}</span>
+      <button type="button" class="banner-close" @click="clearStatusBanner" aria-label="Dismiss">&times;</button>
+    </div>
+
     <!-- Header Controls -->
     <header class="dashboard-top-header">
-      <!-- Left: Active Device Badge -->
+      <!-- Left: Scan QR Action -->
       <div class="top-left-device-badge">
         <span class="device-dot"></span>
-        <button type="button" class="left-device-badge" @click.prevent="openScanModal">
+        <button type="button" class="left-device-badge" :disabled="isProcessing" @click.prevent="openScanModal">
           Scan QR Code
         </button>
       </div>
 
-      <!-- Right: Combined Device Filter Badge & Scan Button -->
+      <!-- Right: Active Device Filter Badge & Quick Refresh -->
       <div class="header-right-toolbar">
         <button type="button" class="top-left-device-badge filter-clickable-badge"
           :class="{ inactive: !filterByCurrentDevice }" @click="filterByCurrentDevice = !filterByCurrentDevice"
@@ -19,75 +25,83 @@
           Active Device: <strong>{{ operatorName }}</strong>
           <span class="filter-status-text">({{ filterByCurrentDevice ? 'Filtered' : 'All Devices' }})</span>
         </button>
+
+        <button type="button" class="btn-refresh" :disabled="isLoadingRecords" @click="refreshRecords(true, true)"
+          title="Refresh records">
+          {{ isLoadingRecords ? 'Syncing...' : 'Refresh' }}
+        </button>
       </div>
     </header>
 
     <!-- Main Tab Navigation -->
     <div class="tabs-container">
-      <button type="button" class="tab-btn" :class="{ active: activeTab === 'records' }"
-        @click="activeTab = 'records'">Daily NPT Records
+      <button type="button" class="tab-btn" :class="{ active: activeTab === 'records' }" @click="activeTab = 'records'">
+        Daily NPT Records
       </button>
-      <button 
-        type="button" 
-        class="tab-btn" 
-        :class="{ active: activeTab === 'summary' }" 
-        @click="activeTab = 'summary'"
-      >Monthly Summary Report
+      <button type="button" class="tab-btn" :class="{ active: activeTab === 'summary' }" @click="activeTab = 'summary'">
+        Monthly Summary Report
       </button>
     </div>
 
     <!-- Excel Sheet 1: Daily NPT Records & Child Tabs -->
     <div v-if="activeTab === 'records'" class="records-tab-content">
-      <div class="sub-tabs-container" style="margin-top: 4px; margin-bottom: 8px; display: flex; gap: 6px; border-bottom: 1px solid #d0d7de; padding-bottom: 4px;">
-        <button 
-          type="button" 
-          class="tab-btn sub-tab-btn" 
-          :class="{ active: activeDailySubTab === 'table_charts' }" 
-          @click="activeDailySubTab = 'table_charts'"
-        >NPT Table & Charts
+      <div class="sub-tabs-container">
+        <button type="button" class="tab-btn sub-tab-btn" :class="{ active: activeDailySubTab === 'table_charts' }"
+          @click="activeDailySubTab = 'table_charts'">
+          NPT Table & Charts
         </button>
-        <button 
-          type="button" 
-          class="tab-btn sub-tab-btn" 
-          :class="{ active: activeDailySubTab === 'day_wise' }" 
-          @click="activeDailySubTab = 'day_wise'"
-        >Day-wise Bar Chart Analysis
+        <button type="button" class="tab-btn sub-tab-btn" :class="{ active: activeDailySubTab === 'day_wise' }"
+          @click="activeDailySubTab = 'day_wise'">
+          Day-wise Bar Chart Analysis
         </button>
       </div>
 
       <!-- Sub-Tab Content 1: Daily Table & Charts -->
       <div v-if="activeDailySubTab === 'table_charts'">
-        <div class="excel-sheet-wrapper" style="margin-top: 0.5rem;">
+        <div class="excel-sheet-wrapper">
           <table class="excel-table">
             <thead>
               <tr>
                 <th class="row-index-header">#</th>
-                <th v-for="header in HEADERS" :key="header" class="excel-cell-header">{{ formatHeader(header) }}</th>
+                <th v-for="header in HEADERS" :key="header" class="excel-cell-header">
+                  {{ formatHeader(header) }}
+                </th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(record, index) in filteredRecords" :key="record.ID || index" class="excel-row">
+              <tr v-if="isLoadingRecords && records.length === 0">
+                <td :colspan="HEADERS.length + 1" class="no-data">Loading daily NPT records...</td>
+              </tr>
+              <tr v-else v-for="(record, index) in filteredRecords" :key="record.ID || record.rowIndex || index"
+                class="excel-row">
                 <td class="row-index-cell">{{ index + 1 }}</td>
                 <td v-for="header in HEADERS" :key="header" class="excel-cell">
-                  <span v-if="header === 'QRcode'" class="badge badge-code">{{ record[header] }}</span>
-                  <span v-else-if="header === 'Ttl_Time'" class="badge badge-ttl">{{ record[header] }}</span>
+                  <span v-if="header === 'QRcode'" class="badge badge-code">{{ record[header] || '-' }}</span>
+                  <span v-else-if="header === 'Ttl_Time'" class="badge badge-ttl">{{ record[header] || '-' }}</span>
+                  <span v-else-if="header === 'Duration_time'">{{ getFormattedDurationCell(record) }}</span>
                   <span v-else-if="header === 'Status'" :class="getStatusBadgeClass(record[header])">
                     {{ record[header] || '-' }}
                   </span>
-                  <span v-else>{{ record[header] !== undefined && record[header] !== '' ? record[header] : '-' }}</span>
+                  <span v-else>{{ hasDisplayValue(record[header]) ? record[header] : '-' }}</span>
                 </td>
               </tr>
-              <tr v-if="filteredRecords.length === 0">
-                <td :colspan="HEADERS.length + 1" class="no-data">No records found for today. Click "Scan QR Code" to log an issue.</td>
+              <tr v-if="!isLoadingRecords && filteredRecords.length === 0">
+                <td :colspan="HEADERS.length + 1" class="no-data">
+                  No records found for {{ todayDateStr }}. Click "Scan QR Code" to log an issue.
+                </td>
               </tr>
             </tbody>
             <!-- Grand Total Footer Row -->
             <tfoot v-if="filteredRecords.length > 0">
               <tr class="excel-row grand-total-row">
                 <td class="row-index-header font-bold">Σ</td>
-                <td :colspan="HEADERS.indexOf('Ttl_Time')" class="excel-cell text-right font-bold">Grand Total Lost Time & Pieces (SMV: {{ AVG_SMV }}):</td>
-                <td class="excel-cell font-bold badge-ttl-total">{{ grandTotalTtlTime }} mins (≈ {{ grandTotalLostPieces }} pcs)</td>
-                <td :colspan="HEADERS.length - HEADERS.indexOf('Ttl_Time') - 1" class="excel-cell"></td>
+                <td :colspan="HEADERS.indexOf('Ttl_Time')" class="excel-cell text-right font-bold">
+                  Grand Total Lost Time & Pieces (SMV: {{ AVG_SMV }}):
+                </td>
+                <td class="excel-cell font-bold badge-ttl-total">
+                  {{ grandTotalTtlTime }} mins (≈ {{ grandTotalLostPieces }} pcs)
+                </td>
+                <td :colspan="Math.max(0, HEADERS.length - HEADERS.indexOf('Ttl_Time') - 1)" class="excel-cell"></td>
               </tr>
             </tfoot>
           </table>
@@ -126,18 +140,15 @@
 
     <!-- Excel Sheet 2: Monthly Summary Report -->
     <div v-if="activeTab === 'summary'" class="summary-tab-content">
-      <div class="sub-tabs-container" style="margin-top: 8px; margin-bottom: 12px; display: flex; gap: 6px; border-bottom: 1px solid #d0d7de; padding-bottom: 4px;">
-        <button 
-          type="button" 
-          class="tab-btn sub-tab-btn" 
-          :class="{ active: activeMonthlySubTab === 'trends' }" 
-          @click="activeMonthlySubTab = 'trends'"
-        >Multi-Month Trends
+      <div class="sub-tabs-container">
+        <button type="button" class="tab-btn sub-tab-btn" :class="{ active: activeMonthlySubTab === 'trends' }"
+          @click="activeMonthlySubTab = 'trends'">
+          Multi-Month Trends
         </button>
       </div>
 
-      <div v-if="activeMonthlySubTab === 'trends'" class="excel-sheet-wrapper" style="margin-top: 0.5rem;">
-        <div class="charts-row" style="margin-top: 16px;" v-if="records.length > 0">    
+      <div v-if="activeMonthlySubTab === 'trends'" class="excel-sheet-wrapper">
+        <div class="charts-row" style="margin-top: 16px;" v-if="records.length > 0">
           <div class="chart-col" style="flex: 1; min-width: 320px;">
             <div class="chart-container-wrapper">
               <div class="chart-header-title">Monthly Lost Minutes Comparison</div>
@@ -147,13 +158,18 @@
             </div>
           </div>
         </div>
+        <div v-else class="no-data" style="margin-top: 20px;">
+          No records available for monthly trend comparison.
+        </div>
       </div>
     </div>
 
     <!-- Mobile QR Camera Scanner Modal -->
     <div v-if="showScanModal" class="modal-overlay" @click.self="closeScanModal">
       <div class="modal-content scanner-modal" @click.stop>
-        <button type="button" class="btn-close-absolute" @click.prevent="closeScanModal">&times;</button>
+        <button type="button" class="btn-close-absolute" @click.prevent="closeScanModal" aria-label="Close modal">
+          &times;
+        </button>
 
         <div class="pipup-device-badge modal-corner-badge">
           <span class="device-dot"></span> Active Device: <strong>{{ operatorName }}</strong>
@@ -163,10 +179,10 @@
         <p class="scanner-desc">Select Time Action first.</p>
 
         <!-- Step 1: Time Action Field -->
-
         <div class="form-group">
           <label for="timeAction">Time Action:</label>
-          <select id="timeAction" v-model="selectedTimeRange" @change="onTimeActionChange" class="form-control">
+          <select id="timeAction" v-model="selectedTimeRange" :disabled="isProcessing" @change="onTimeActionChange"
+            class="form-control">
             <option disabled value="">Select time action...</option>
             <option value="start">Start Time (Log New Issue)</option>
             <option value="end">End Time (Resolve Existing Issue)</option>
@@ -176,7 +192,7 @@
         <!-- Step 2: Type of Problem (Appears ONLY if 'start' is selected) -->
         <div class="form-group" v-if="selectedTimeRange === 'start'">
           <label for="problemType">Type of Problem:</label>
-          <select id="problemType" v-model="selectedProblemType" class="form-control">
+          <select id="problemType" v-model="selectedProblemType" :disabled="isProcessing" class="form-control">
             <option disabled value="">Select problem category...</option>
             <option v-for="category in problemCategories" :key="category" :value="category">
               {{ category }}
@@ -187,7 +203,7 @@
         <!-- Step 3: Line No (Appears ONLY if 'start' is selected and problem category is chosen) -->
         <div class="form-group" v-if="selectedTimeRange === 'start' && selectedProblemType">
           <label for="lineNo">Line No:</label>
-          <select id="lineNo" v-model="selectedLineNo" class="form-control">
+          <select id="lineNo" v-model="selectedLineNo" :disabled="isProcessing" class="form-control">
             <option disabled value="">Select line number...</option>
             <option v-for="line in lineOptions" :key="line.ID || line.Line_No" :value="line.Line_No">
               {{ line.Line_No }}
@@ -197,27 +213,31 @@
 
         <!-- Step 4: Effective Manpower (Appears AFTER scanning QR when 'end' is selected) -->
         <div class="form-group" v-if="pendingResolveRecord && !cameraActive">
-          <div class="resolved-info-banner" style="background: #e8f0fe; padding: 6px; border-radius: 2px; margin-bottom: 6px; font-size: 11px;">
+          <div class="resolved-info-banner">
             <div><strong>Scanned Machine:</strong> {{ pendingResolveRecord.QRcode }}</div>
-            <div><strong>Start Time:</strong> {{ pendingResolveRecord.Start_time }}</div>
+            <div><strong>Start Time:</strong> {{ pendingResolveRecord.Start_time || '-' }}</div>
           </div>
           <label for="manpowerInput">Effective Manpower:</label>
-          <input id="manpowerInput" v-model.number="effectiveManpower" type="number" min="1" class="select-input"
-            placeholder="e.g. 1" />
-          <button type="button" class="btn btn-primary" style="margin-top: 0.5rem; width: 100%;" @click.prevent="finalizeResolution">
+          <input id="manpowerInput" v-model.number="effectiveManpower" type="number" min="1" :disabled="isProcessing"
+            class="select-input" placeholder="e.g. 1" />
+          <button type="button" class="btn btn-primary" style="margin-top: 0.5rem; width: 100%;"
+            :disabled="isProcessing" @click.prevent="finalizeResolution">
             {{ isProcessing ? 'Saving...' : 'Save Data' }}
           </button>
         </div>
 
         <!-- Proceed Button for Start Time -->
-        <button v-if="selectedTimeRange === 'start' && selectedProblemType && selectedLineNo && !cameraActive" type="button" class="btn btn-primary"
-          style="margin-top: 0.5rem; width: 100%;" @click.prevent="startCamera">
+        <button
+          v-if="selectedTimeRange === 'start' && selectedProblemType && selectedLineNo && !cameraActive && !pendingResolveRecord"
+          type="button" class="btn btn-primary" style="margin-top: 0.5rem; width: 100%;" :disabled="isProcessing"
+          @click.prevent="startCamera">
           Proceed to Camera Scan
         </button>
 
         <!-- Proceed Button for End Time (Opens camera immediately) -->
-        <button v-if="selectedTimeRange === 'end' && !pendingResolveRecord && !cameraActive" type="button" class="btn btn-primary"
-          style="margin-top: 0.5rem; width: 100%;" @click.prevent="startCamera">
+        <button v-if="selectedTimeRange === 'end' && !pendingResolveRecord && !cameraActive" type="button"
+          class="btn btn-primary" style="margin-top: 0.5rem; width: 100%;" :disabled="isProcessing"
+          @click.prevent="startCamera">
           Proceed to Camera Scan
         </button>
 
@@ -246,30 +266,64 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { QrcodeStream } from 'vue-qrcode-reader';
-import { Chart as ChartJS, Title, Tooltip, Legend, BarElement, LineElement, PointElement, CategoryScale, LinearScale } from 'chart.js';
+import {
+  Chart as ChartJS,
+  Title,
+  Tooltip,
+  Legend,
+  BarElement,
+  LineElement,
+  PointElement,
+  CategoryScale,
+  LinearScale
+} from 'chart.js';
 import ChartDataLabels from 'chartjs-plugin-datalabels';
 import { Bar, Line } from 'vue-chartjs';
 import { dbAPI } from '@/services/npt_qr_code_api.js';
 import { dbAPI as Unit_line_API } from '@/services/unit_line_api.js';
 import { dbAPI as Problem_Category_API } from '@/services/problem_category_api.js';
 
-ChartJS.register(Title, Tooltip, Legend, BarElement, LineElement, PointElement, CategoryScale, LinearScale, ChartDataLabels);
+ChartJS.register(
+  Title,
+  Tooltip,
+  Legend,
+  BarElement,
+  LineElement,
+  PointElement,
+  CategoryScale,
+  LinearScale,
+  ChartDataLabels
+);
 
 const SHEET_NAME = 'DailyNPTrecord';
-
-const HEADERS = ['Line_No', 'QRcode', 'Type_of_Problem', 'No_of_Effective_Man', 'Start_time', 'End_Time', 'Duration_time', 'Ttl_Time', 'Device_Name', 'Status'];
+const HEADERS = [
+  'Line_No',
+  'QRcode',
+  'Type_of_Problem',
+  'No_of_Effective_Man',
+  'Start_time',
+  'End_Time',
+  'Duration_time',
+  'Ttl_Time',
+  'Device_Name',
+  'Status'
+];
 
 const activeTab = ref('records');
-const activeDailySubTab = ref('table_charts'); 
-const activeMonthlySubTab = ref('trends'); 
+const activeDailySubTab = ref('table_charts');
+const activeMonthlySubTab = ref('trends');
 const searchQuery = ref('');
 const filterByCurrentDevice = ref(true);
 const showScanModal = ref(false);
 const cameraActive = ref(false);
 const cameraError = ref('');
 const isProcessing = ref(false);
+const isLoadingRecords = ref(false);
+
+const statusBanner = ref({ type: '', message: '' });
+let bannerTimer = null;
 
 const problemCategories = ref([]);
 const lineOptions = ref([]);
@@ -279,43 +333,94 @@ const selectedTimeRange = ref('');
 const effectiveManpower = ref(1);
 const pendingResolveRecord = ref(null);
 
-const getCurrentYYYYMMDD = () => {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+const showBanner = (message, type = 'info', durationMs = 3500) => {
+  statusBanner.value = { type, message };
+  if (bannerTimer) clearTimeout(bannerTimer);
+  if (durationMs > 0) {
+    bannerTimer = setTimeout(() => {
+      statusBanner.value = { type: '', message: '' };
+    }, durationMs);
+  }
 };
 
-const todayDateStr = getCurrentYYYYMMDD();
+const clearStatusBanner = () => {
+  if (bannerTimer) clearTimeout(bannerTimer);
+  statusBanner.value = { type: '', message: '' };
+};
 
-const DAILY_MACHINE_COST = 25; 
-const DOLLAR_RATE = 120; 
-const DAILY_WORKING_MINUTES = 600; 
+const getCurrentDDMMYYYY = () => {
+  const now = new Date();
+  const day = String(now.getDate()).padStart(2, '0');
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const year = now.getFullYear();
+  return `${day}-${month}-${year}`;
+};
+
+const normalizeDateToDDMMYYYY = (rawDate) => {
+  const str = String(rawDate || '').trim();
+  if (!str) return '';
+
+  const dmyMatch = str.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})/);
+  if (dmyMatch) {
+    const dd = String(dmyMatch[1]).padStart(2, '0');
+    const mm = String(dmyMatch[2]).padStart(2, '0');
+    const yyyy = dmyMatch[3];
+    return `${dd}-${mm}-${yyyy}`;
+  }
+
+  const ymdMatch = str.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (ymdMatch) {
+    const yyyy = ymdMatch[1];
+    const mm = String(ymdMatch[2]).padStart(2, '0');
+    const dd = String(ymdMatch[3]).padStart(2, '0');
+    return `${dd}-${mm}-${yyyy}`;
+  }
+
+  return str;
+};
+
+const extractYearMonthKey = (rawDate) => {
+  const normalized = normalizeDateToDDMMYYYY(rawDate);
+  const match = normalized.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (match) {
+    return `${match[3]}-${match[2]}`;
+  }
+  return 'Unknown';
+};
+
+const todayDateStr = getCurrentDDMMYYYY();
+
+const DAILY_MACHINE_COST = 25;
+const DOLLAR_RATE = 120;
+const DAILY_WORKING_MINUTES = 600;
 const costPerMinute = DAILY_MACHINE_COST / DAILY_WORKING_MINUTES;
 const costPerMinute_TAKA = costPerMinute * DOLLAR_RATE;
-const AVG_SMV = 4.5; 
+const AVG_SMV = 4.5;
 
 const getMobileBrandName = () => {
-  const ua = navigator.userAgent;
-  if (/iphone/i.test(ua)) return "Apple iPhone";
-  if (/ipad/i.test(ua)) return "Apple iPad";
-  if (/samsung/i.test(ua) || /sm-/i.test(ua)) return "Samsung Device";
-  if (/pixel/i.test(ua)) return "Google Pixel";
-  if (/xiaomi|redmi/i.test(ua)) return "Xiaomi Device";
-  if (/oppo/i.test(ua)) return "Oppo Device";
-  if (/vivo/i.test(ua)) return "Vivo Device";
-  if (/huawei/i.test(ua)) return "Huawei Device";
-  if (/android/i.test(ua)) return "Android Phone";
-  if (/windows/i.test(ua)) return "Windows PC";
-  if (/mac/i.test(ua)) return "Mac";
-  return "Mobile Terminal";
+  try {
+    const ua = String(navigator.userAgent || '');
+    if (/iphone/i.test(ua)) return 'Apple iPhone';
+    if (/ipad/i.test(ua)) return 'Apple iPad';
+    if (/android/i.test(ua)) return 'Android Phone';
+    if (/windows/i.test(ua)) return 'Windows PC';
+    if (/mac/i.test(ua)) return 'Mac';
+  } catch (e) {
+    // Fallback below
+  }
+  return 'Mobile Terminal';
 };
 
 const operatorName = ref(getMobileBrandName());
 const records = ref([]);
 
+const hasDisplayValue = (val) => val !== undefined && val !== null && String(val).trim() !== '';
+
 const formatDeviceTime = (date = new Date()) => {
-  let hours = date.getHours();
-  const minutes = date.getMinutes();
-  const seconds = date.getSeconds();
+  const d = date instanceof Date && !isNaN(date.getTime()) ? date : new Date();
+  let hours = d.getHours();
+  const minutes = d.getMinutes();
+  const seconds = d.getSeconds();
   const ampm = hours >= 12 ? 'PM' : 'AM';
   hours = hours % 12 || 12;
   const pad = (n) => String(n).padStart(2, '0');
@@ -323,19 +428,100 @@ const formatDeviceTime = (date = new Date()) => {
 };
 
 const parseTotalSecondsFrom12h = (timeStr) => {
-  if (!timeStr || timeStr === '-') return 0;
-  const [timePart, modifier] = timeStr.split(' ');
-  let [hours, minutes, seconds] = timePart.split(':').map(Number);
-  if (modifier === 'PM' && hours < 12) hours += 12;
-  if (modifier === 'AM' && hours === 12) hours = 0;
-  return (hours * 3600) + (minutes * 60) + (seconds || 0);
+  const str = String(timeStr || '').trim();
+  if (!str || str === '-') return 0;
+
+  const ampmMatch = str.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)$/i);
+  if (ampmMatch) {
+    let hours = Number(ampmMatch[1]) || 0;
+    const minutes = Number(ampmMatch[2]) || 0;
+    const seconds = Number(ampmMatch[3]) || 0;
+    const modifier = ampmMatch[4].toUpperCase();
+    if (modifier === 'PM' && hours < 12) hours += 12;
+    if (modifier === 'AM' && hours === 12) hours = 0;
+    return hours * 3600 + minutes * 60 + seconds;
+  }
+
+  const hmsMatch = str.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (hmsMatch) {
+    const hours = Number(hmsMatch[1]) || 0;
+    const minutes = Number(hmsMatch[2]) || 0;
+    const seconds = Number(hmsMatch[3]) || 0;
+    return hours * 3600 + minutes * 60 + seconds;
+  }
+
+  const parsedDate = new Date(str);
+  if (!Number.isNaN(parsedDate.getTime())) {
+    return (
+      parsedDate.getHours() * 3600 +
+      parsedDate.getMinutes() * 60 +
+      parsedDate.getSeconds()
+    );
+  }
+
+  return 0;
+};
+
+const formatSecondsAsClock = (totalSec) => {
+  const safeSec = Math.max(0, Math.floor(Number(totalSec) || 0));
+  const hrs = Math.floor(safeSec / 3600);
+  const mins = Math.floor((safeSec % 3600) / 60);
+  const secs = safeSec % 60;
+  const pad = (n) => String(n).padStart(2, '0');
+  return hrs > 0 ? `${pad(hrs)}:${pad(mins)}:${pad(secs)}` : `${pad(mins)}:${pad(secs)}`;
+};
+
+// Duration_time কলামে 12:01:42 AM বা Date স্ট্রিং এলে Start_time ও End_Time থেকে সঠিক Duration দেখায়
+const getFormattedDurationCell = (record) => {
+  if (!record || typeof record !== 'object') return '-';
+  const startSec = parseTotalSecondsFrom12h(record.Start_time);
+  const endSec = parseTotalSecondsFrom12h(record.End_Time);
+
+  if (record.Start_time && record.End_Time && record.End_Time !== '-') {
+    let diff = endSec - startSec;
+    if (diff < 0) diff += 24 * 3600;
+    return formatSecondsAsClock(diff);
+  }
+
+  const rawDur = String(record.Duration_time || '').trim();
+  if (!rawDur || rawDur === '-') return '-';
+
+  // Sheets-এর Date/AM-PM duration (যেমন "12:01:42 AM") হলে সময় অংশ হিসেবে ধরে ক্লক ফরম্যাটে দেখায়
+  const ampmDurMatch = rawDur.match(/^12:(\d{2}):(\d{2})\s*AM$/i);
+  if (ampmDurMatch) {
+    return `${ampmDurMatch[1]}:${ampmDurMatch[2]}`;
+  }
+
+  return rawDur;
+};
+
+const normalizeRecordsList = (rawData) => {
+  if (!Array.isArray(rawData)) return [];
+  return rawData
+    .slice()
+    .reverse()
+    .map((row) => {
+      if (!row || typeof row !== 'object') return row;
+      const normalizedDate = normalizeDateToDDMMYYYY(row.Created_Date || row.Date || '');
+      return normalizedDate ? { ...row, Created_Date: normalizedDate } : row;
+    });
 };
 
 const fetchProblemCategories = async () => {
   try {
     const data = await Problem_Category_API.getRecords('Problem_Category');
     if (Array.isArray(data) && data.length > 0) {
-      problemCategories.value = [...new Set(data.map(item => item.Problem_Category || item.Name || item).filter(Boolean))];
+      problemCategories.value = [
+        ...new Set(
+          data
+            .map((item) =>
+              typeof item === 'object' && item !== null
+                ? item.Problem_Category || item.Name || ''
+                : item
+            )
+            .filter(Boolean)
+        )
+      ];
     }
   } catch (error) {
     console.error('Failed to fetch problem categories:', error);
@@ -345,25 +531,49 @@ const fetchProblemCategories = async () => {
 const fetchLineNumbers = async () => {
   try {
     const data = await Unit_line_API.getRecords('Unit_line_No');
-    lineOptions.value = Array.isArray(data) ? data : [];
+    if (Array.isArray(data)) {
+      lineOptions.value = data;
+    }
   } catch (error) {
     console.error('Failed to fetch line numbers:', error);
   }
 };
 
-onMounted(async () => {
+const refreshRecords = async (showFeedback = false, forceRefresh = false) => {
+  if (isLoadingRecords.value) return;
+  isLoadingRecords.value = true;
   try {
-    const fetchedData = await dbAPI.getRecords(SHEET_NAME);
-    if (fetchedData?.length) records.value = fetchedData.reverse();
+    const fetchedData = await dbAPI.getRecords(SHEET_NAME, '', { forceRefresh });
+    if (Array.isArray(fetchedData)) {
+      records.value = normalizeRecordsList(fetchedData);
+      if (showFeedback) {
+        showBanner('Records synced.', 'success', 2000);
+      }
+    }
   } catch (error) {
     console.error('Failed to load records:', error);
+    if (showFeedback) {
+      showBanner('Unable to sync records right now.', 'error', 3500);
+    }
+  } finally {
+    isLoadingRecords.value = false;
   }
+};
 
-  await fetchProblemCategories();
-  await fetchLineNumbers();
+onMounted(async () => {
+  await Promise.allSettled([
+    refreshRecords(false, false),
+    fetchProblemCategories(),
+    fetchLineNumbers()
+  ]);
 });
 
-const openScanModal = async () => {
+onBeforeUnmount(() => {
+  if (bannerTimer) clearTimeout(bannerTimer);
+  cameraActive.value = false;
+});
+
+const openScanModal = () => {
   cameraError.value = '';
   cameraActive.value = false;
   selectedProblemType.value = '';
@@ -372,17 +582,20 @@ const openScanModal = async () => {
   effectiveManpower.value = 1;
   pendingResolveRecord.value = null;
   showScanModal.value = true;
-  await fetchLineNumbers();
-  await fetchProblemCategories();
+
+  if (!problemCategories.value.length) fetchProblemCategories();
+  if (!lineOptions.value.length) fetchLineNumbers();
 };
 
 const closeScanModal = () => {
-  showScanModal.value = false;
   cameraActive.value = false;
   pendingResolveRecord.value = null;
+  showScanModal.value = false;
 };
 
 const onTimeActionChange = () => {
+  cameraError.value = '';
+  cameraActive.value = false;
   selectedProblemType.value = '';
   selectedLineNo.value = '';
   pendingResolveRecord.value = null;
@@ -397,143 +610,185 @@ const startCamera = () => {
 };
 
 const onCameraError = (err) => {
-  if (err.name === 'NotAllowedError') cameraError.value = 'Camera permission denied.';
-  else if (err.name === 'NotFoundError') cameraError.value = 'No camera device found.';
-  else cameraError.value = `Camera error: ${err.message}`;
+  cameraActive.value = false;
+  const name = err?.name || '';
+  if (name === 'NotAllowedError') cameraError.value = 'Camera permission denied.';
+  else if (name === 'NotFoundError') cameraError.value = 'No camera device found.';
+  else cameraError.value = `Camera error: ${err?.message || 'Unable to start camera.'}`;
 };
 
 const onDetect = (detectedCodes) => {
-  if (detectedCodes?.length) processScan(detectedCodes[0].rawValue);
+  if (!cameraActive.value || isProcessing.value) return;
+  const rawVal =
+    Array.isArray(detectedCodes) && detectedCodes.length > 0 ? detectedCodes[0]?.rawValue : '';
+  if (rawVal) {
+    processScan(rawVal);
+  }
 };
 
 const processScan = async (scannedCode) => {
   if (isProcessing.value) return;
-  const code = scannedCode?.trim();
+  const code = String(scannedCode || '').trim();
   if (!code) return;
 
   isProcessing.value = true;
-  const now = new Date();
   cameraActive.value = false;
+  cameraError.value = '';
 
   try {
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    const currentDateStr = `${year}-${month}-${day}`;
+    const now = new Date();
+    const currentDateStr = getCurrentDDMMYYYY();
 
     if (selectedTimeRange.value === 'end') {
       const activeRecord = records.value.find(
-        r => r.QRcode === code &&
-          (!r.End_Time || r.End_Time === '-' || r.End_Time === '')
+        (r) =>
+          String(r.QRcode || '').trim() === code &&
+          (!r.End_Time || String(r.End_Time).trim() === '-' || String(r.End_Time).trim() === '')
       );
 
       if (!activeRecord) {
-        alert('No active running record found for this QR code.');
-        isProcessing.value = false;
+        cameraError.value = `No active running record found for QR: ${code}`;
+        showBanner(`No open record found for ${code}.`, 'error', 3500);
         return;
       }
 
       pendingResolveRecord.value = activeRecord;
-      isProcessing.value = false;
-    } else {
-      const newEntry = {
-        QRcode: code,
-        Type_of_Problem: selectedProblemType.value,
-        Line_No: selectedLineNo.value,
-        No_of_Effective_Man: '',
-        Start_time: formatDeviceTime(now),
-        End_Time: '-',
-        Duration_time: '-',
-        Ttl_Time: '-',
-        Device_Name: operatorName.value,
-        Status: 'Pending',
-        Created_Date: currentDateStr
-      };
-
-      records.value.unshift(newEntry);
-      await dbAPI.saveRecord(SHEET_NAME, newEntry, 'create');
-      showScanModal.value = false;
-      isProcessing.value = false;
+      effectiveManpower.value = Number(activeRecord.No_of_Effective_Man) || 1;
+      showBanner(`Scanned ${code}. Enter effective manpower and click Save Data.`, 'info', 3500);
+      return;
     }
+
+    const newEntry = {
+      QRcode: code,
+      Type_of_Problem: selectedProblemType.value,
+      Line_No: selectedLineNo.value,
+      No_of_Effective_Man: '',
+      Start_time: formatDeviceTime(now),
+      End_Time: '-',
+      Duration_time: '-',
+      Ttl_Time: '-',
+      Device_Name: operatorName.value,
+      Status: 'Pending',
+      Created_Date: currentDateStr
+    };
+
+    records.value.unshift(newEntry);
+    closeScanModal();
+    showBanner(`NPT started for ${code}. Saving...`, 'info', 2500);
+
+    const saved = await dbAPI.saveRecord(SHEET_NAME, newEntry, 'create');
+    if (saved && typeof saved === 'object') {
+      const merged = { ...newEntry, ...(saved.data || saved) };
+      if (merged.Created_Date) {
+        merged.Created_Date = normalizeDateToDDMMYYYY(merged.Created_Date);
+      }
+      Object.assign(newEntry, merged);
+    }
+
+    await refreshRecords(false, true);
+    showBanner(`NPT logged for ${code}.`, 'success', 3000);
   } catch (error) {
     console.error('Failed to process scan action:', error);
-    isProcessing.value = false;
-  }
-};
-
-const finalizeResolution = async () => {
-  if (!pendingResolveRecord.value || isProcessing.value) return;
-  isProcessing.value = true;
-
-  try {
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    const currentDateStr = `${year}-${month}-${day}`;
-
-    pendingResolveRecord.value.End_Time = formatDeviceTime(now);
-    pendingResolveRecord.value.Status = 'Resolved';
-    pendingResolveRecord.value.No_of_Effective_Man = effectiveManpower.value || 1;
-
-    if (!pendingResolveRecord.value.Created_Date || pendingResolveRecord.value.Created_Date.includes(':')) {
-      pendingResolveRecord.value.Created_Date = currentDateStr;
-    }
-
-    const startSeconds = parseTotalSecondsFrom12h(pendingResolveRecord.value.Start_time);
-    const endSeconds = parseTotalSecondsFrom12h(pendingResolveRecord.value.End_Time);
-    let diffSeconds = endSeconds - startSeconds;
-    if (diffSeconds < 0) diffSeconds += 24 * 3600;
-
-    const effectiveMan = Number(pendingResolveRecord.value.No_of_Effective_Man) || 1;
-    const mins = Math.floor(diffSeconds / 60);
-    const secs = diffSeconds % 60;
-
-    pendingResolveRecord.value.Duration_time = `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-    const totalManMins = effectiveMan * mins;
-    pendingResolveRecord.value.Ttl_Time = `${totalManMins} mins`;
-
-    await dbAPI.saveRecord(SHEET_NAME, pendingResolveRecord.value, 'update');
-    
-    const fetchedData = await dbAPI.getRecords(SHEET_NAME);
-    if (fetchedData?.length) records.value = fetchedData.reverse();
-
-    showScanModal.value = false;
-    pendingResolveRecord.value = null;
-  } catch (error) {
-    console.error('Failed to save resolution data:', error);
-    alert('Failed to save resolution data. Please try again.');
+    const msg = error?.message || 'Please try again.';
+    cameraError.value = `Failed to save scan: ${msg}`;
+    showBanner(`Failed to process scan: ${msg}`, 'error', 3500);
   } finally {
     isProcessing.value = false;
   }
 };
 
-const formatHeader = (headerKey) => headerKey.replace(/_/g, ' ');
+const finalizeResolution = async () => {
+  const target = pendingResolveRecord.value;
+  if (!target || isProcessing.value) return;
+
+  isProcessing.value = true;
+  cameraError.value = '';
+
+  try {
+    const now = new Date();
+    const currentDateStr = getCurrentDDMMYYYY();
+    const endTimeFormatted = formatDeviceTime(now);
+    const manCount = Math.max(1, Number(effectiveManpower.value) || 1);
+
+    const existingDate = String(target.Created_Date || '').trim();
+    const normalizedCreatedDate =
+      !existingDate || existingDate.includes(':')
+        ? currentDateStr
+        : normalizeDateToDDMMYYYY(existingDate);
+
+    const startSeconds = parseTotalSecondsFrom12h(target.Start_time);
+    const endSeconds = parseTotalSecondsFrom12h(endTimeFormatted);
+    let diffSeconds = endSeconds - startSeconds;
+    if (diffSeconds < 0) diffSeconds += 24 * 3600;
+
+    const totalMins = Math.floor(diffSeconds / 60);
+    const secs = diffSeconds % 60;
+    const hrs = Math.floor(totalMins / 60);
+    const remMins = totalMins % 60;
+
+    const durationFormatted = `${String(hrs).padStart(2, '0')}:${String(remMins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    const ttlFormatted = `${manCount * totalMins} mins`;
+
+    const updatedPayload = {
+      ...target,
+      End_Time: endTimeFormatted,
+      Status: 'Resolved',
+      No_of_Effective_Man: manCount,
+      Created_Date: normalizedCreatedDate,
+      Duration_time: durationFormatted,
+      Ttl_Time: ttlFormatted
+    };
+
+    await dbAPI.saveRecord(SHEET_NAME, updatedPayload, 'update');
+
+    Object.assign(target, updatedPayload);
+    closeScanModal();
+    showBanner(`Resolved ${target.QRcode} (${target.Ttl_Time}).`, 'success', 3500);
+
+    // পেজ reload না করেই ফ্রেশ ডেটা সিঙ্ক
+    await refreshRecords(false, true);
+  } catch (error) {
+    console.error('Failed to save resolution data:', error);
+    const msg = error?.message || 'Please try again.';
+    cameraError.value = `Failed to save resolution data: ${msg}`;
+    showBanner(`Failed to save resolution: ${msg}`, 'error', 3500);
+  } finally {
+    isProcessing.value = false;
+  }
+};
+
+const formatHeader = (headerKey) => String(headerKey || '').replace(/_/g, ' ');
 
 const getStatusBadgeClass = (status) => {
   const normalized = String(status || '').trim().toLowerCase();
-  return (normalized === 'solved' || normalized === 'resolved')
+  return normalized === 'solved' || normalized === 'resolved'
     ? 'badge badge-status-solved'
     : 'badge badge-status-pending';
 };
 
+const parseNumericMinutes = (val) => {
+  const digits = String(val || '').replace(/[^0-9.]/g, '');
+  const num = Number(digits);
+  return Number.isFinite(num) ? num : 0;
+};
+
 const filteredRecords = computed(() => {
-  return records.value.filter(record => {
-    const recordDate = record.Created_Date || record.Date || '';
-    const matchesDate = recordDate.startsWith(todayDateStr);
+  const query = String(searchQuery.value || '').trim().toLowerCase();
+  return records.value.filter((record) => {
+    if (!record || typeof record !== 'object') return false;
+    const recordDate = normalizeDateToDDMMYYYY(record.Created_Date || record.Date || '');
+    const matchesDate = recordDate === todayDateStr;
     const matchesDevice = !filterByCurrentDevice.value || record.Device_Name === operatorName.value;
-    const matchesSearch = !searchQuery.value ||
-      Object.values(record).some(val => String(val).toLowerCase().includes(searchQuery.value.toLowerCase()));
+    const matchesSearch =
+      !query ||
+      Object.values(record).some((val) => String(val ?? '').toLowerCase().includes(query));
 
     return matchesDate && matchesDevice && matchesSearch;
   });
 });
 
 const grandTotalTtlTime = computed(() => {
-  return filteredRecords.value.reduce((sum, record) => {
-    const val = Number(String(record.Ttl_Time || '').replace(/[^0-9]/g, '')) || 0;
-    return sum + val;
-  }, 0);
+  return filteredRecords.value.reduce((sum, record) => sum + parseNumericMinutes(record.Ttl_Time), 0);
 });
 
 const grandTotalLostPieces = computed(() => {
@@ -543,9 +798,9 @@ const grandTotalLostPieces = computed(() => {
 
 const problemBarChartData = computed(() => {
   const map = {};
-  filteredRecords.value.forEach(record => {
+  filteredRecords.value.forEach((record) => {
     const key = record.Type_of_Problem || 'Unassigned';
-    const timeVal = Number(String(record.Ttl_Time || '').replace(/[^0-9]/g, '')) || 0;
+    const timeVal = parseNumericMinutes(record.Ttl_Time);
     if (!map[key]) {
       map[key] = { mins: 0, taka: 0 };
     }
@@ -557,17 +812,27 @@ const problemBarChartData = computed(() => {
   return {
     labels,
     datasets: [
-      { label: 'Lost Minutes (mins)', data: labels.map(k => map[k].mins), backgroundColor: '#1a73e8', borderRadius: 2 },
-      { label: 'Financial Loss (৳ Taka)', data: labels.map(k => Number(map[k].taka.toFixed(2))), backgroundColor: '#34a853', borderRadius: 2 }
+      {
+        label: 'Lost Minutes (mins)',
+        data: labels.map((k) => map[k].mins),
+        backgroundColor: '#1a73e8',
+        borderRadius: 2
+      },
+      {
+        label: 'Financial Loss (৳ Taka)',
+        data: labels.map((k) => Number(map[k].taka.toFixed(2))),
+        backgroundColor: '#34a853',
+        borderRadius: 2
+      }
     ]
   };
 });
 
 const dayWiseBarChartData = computed(() => {
   const dayMap = {};
-  records.value.forEach(record => {
-    const d = record.Created_Date || record.Date || 'Unassigned Date';
-    const timeVal = Number(String(record.Ttl_Time || '').replace(/[^0-9]/g, '')) || 0;
+  records.value.forEach((record) => {
+    const d = normalizeDateToDDMMYYYY(record.Created_Date || record.Date || '') || 'Unassigned Date';
+    const timeVal = parseNumericMinutes(record.Ttl_Time);
     if (!dayMap[d]) {
       dayMap[d] = { mins: 0, taka: 0 };
     }
@@ -575,28 +840,44 @@ const dayWiseBarChartData = computed(() => {
     dayMap[d].taka += timeVal * costPerMinute_TAKA;
   });
 
-  const sortedDays = Object.keys(dayMap).sort();
+  const sortedDays = Object.keys(dayMap).sort((a, b) => {
+    const parseDMY = (s) => {
+      const m = String(s).match(/^(\d{2})-(\d{2})-(\d{4})$/);
+      return m ? new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1])).getTime() : Number.MAX_SAFE_INTEGER;
+    };
+    return parseDMY(a) - parseDMY(b);
+  });
+
   return {
     labels: sortedDays,
     datasets: [
-      { label: 'Lost Minutes (mins)', data: sortedDays.map(d => dayMap[d].mins), backgroundColor: '#1a73e8', borderRadius: 2 },
-      { label: 'Financial Loss (৳ Taka)', data: sortedDays.map(d => Number(dayMap[d].taka.toFixed(2))), backgroundColor: '#34a853', borderRadius: 2 }
+      {
+        label: 'Lost Minutes (mins)',
+        data: sortedDays.map((d) => dayMap[d].mins),
+        backgroundColor: '#1a73e8',
+        borderRadius: 2
+      },
+      {
+        label: 'Financial Loss (৳ Taka)',
+        data: sortedDays.map((d) => Number(dayMap[d].taka.toFixed(2))),
+        backgroundColor: '#34a853',
+        borderRadius: 2
+      }
     ]
   };
 });
 
 const monthlyMultiLineMinutesChartData = computed(() => {
-  const allProblems = [...new Set(records.value.map(r => r.Type_of_Problem || 'Unassigned'))].sort();
+  const allProblems = [...new Set(records.value.map((r) => r.Type_of_Problem || 'Unassigned'))].sort();
   const monthMap = {};
 
-  records.value.forEach(record => {
-    const d = record.Created_Date || record.Date || '';
-    const monthKey = d.length >= 7 ? d.substring(0, 7) : 'Unknown';
+  records.value.forEach((record) => {
+    const monthKey = extractYearMonthKey(record.Created_Date || record.Date || '');
     if (!monthMap[monthKey]) {
       monthMap[monthKey] = {};
     }
     const prob = record.Type_of_Problem || 'Unassigned';
-    const timeVal = Number(String(record.Ttl_Time || '').replace(/[^0-9]/g, '')) || 0;
+    const timeVal = parseNumericMinutes(record.Ttl_Time);
     monthMap[monthKey][prob] = (monthMap[monthKey][prob] || 0) + timeVal;
   });
 
@@ -604,24 +885,26 @@ const monthlyMultiLineMinutesChartData = computed(() => {
   const colorPalette = ['#1a73e8', '#ea4335', '#fbbc05', '#34a853', '#ff6d01', '#7b1fa2'];
 
   const datasets = months.map((month, idx) => {
-    const dataPoints = allProblems.map(prob => monthMap[month][prob] || 0);
+    const dataPoints = allProblems.map((prob) => monthMap[month][prob] || 0);
     const color = colorPalette[idx % colorPalette.length];
 
-    // Format YYYY-MM into a readable month name like "November 2026"
     let formattedMonthName = month;
     if (month.includes('-')) {
       const [y, m] = month.split('-');
-      formattedMonthName = new Date(Number(y), Number(m) - 1, 1).toLocaleString('en-US', { month: 'long', year: 'numeric' });
+      const parsedDate = new Date(Number(y), Number(m) - 1, 1);
+      if (!isNaN(parsedDate.getTime())) {
+        formattedMonthName = parsedDate.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+      }
     }
 
-    return { 
-      label: formattedMonthName, // <--- Using the formatted month name here
-      data: dataPoints, 
-      borderColor: color, 
-      backgroundColor: color, 
-      borderWidth: 2, 
-      fill: false, 
-      tension: 0.2 
+    return {
+      label: formattedMonthName,
+      data: dataPoints,
+      borderColor: color,
+      backgroundColor: color,
+      borderWidth: 2,
+      fill: false,
+      tension: 0.2
     };
   });
 
@@ -631,15 +914,31 @@ const monthlyMultiLineMinutesChartData = computed(() => {
 const barChartOptions = {
   responsive: true,
   maintainAspectRatio: false,
-  plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 10 } } }, datalabels: { display: false } },
-  scales: { x: { ticks: { font: { size: 9 } } }, y: { beginAtZero: true, ticks: { font: { size: 9 } } } }
+  plugins: {
+    legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 10 } } },
+    datalabels: { display: false }
+  },
+  scales: {
+    x: { ticks: { font: { size: 9 } } },
+    y: { beginAtZero: true, ticks: { font: { size: 9 } } }
+  }
 };
 
 const lineChartMinutesOptions = {
   responsive: true,
   maintainAspectRatio: false,
-  plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 10 } } }, datalabels: { display: false } },
-  scales: { x: { ticks: { font: { size: 9 } } }, y: { beginAtZero: true, title: { display: true, text: 'Lost Minutes (mins)', font: { size: 10, weight: 'bold' } }, ticks: { font: { size: 9 } } } }
+  plugins: {
+    legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 10 } } },
+    datalabels: { display: false }
+  },
+  scales: {
+    x: { ticks: { font: { size: 9 } } },
+    y: {
+      beginAtZero: true,
+      title: { display: true, text: 'Lost Minutes (mins)', font: { size: 10, weight: 'bold' } },
+      ticks: { font: { size: 9 } }
+    }
+  }
 };
 </script>
 
@@ -665,17 +964,59 @@ const lineChartMinutesOptions = {
   }
 }
 
+.status-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: bold;
+}
+
+.status-info {
+  background: #e8f0fe;
+  color: #1a73e8;
+  border: 1px solid #c2d7fa;
+}
+
+.status-success {
+  background: #dcfce7;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+}
+
+.status-error {
+  background: #fee2e2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+}
+
+.banner-close {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 15px;
+  font-weight: bold;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
 .dashboard-top-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
   margin-bottom: 8px;
   padding-bottom: 6px;
   border-bottom: 1px solid #d0d7de;
   width: 100%;
 }
 
-.top-left-device-badge, .pipup-device-badge {
+.top-left-device-badge,
+.pipup-device-badge {
   background: #f8f9fa;
   color: #1a73e8;
   border: 1px solid #d4d4d4;
@@ -699,6 +1040,31 @@ const lineChartMinutesOptions = {
   font-weight: bold;
 }
 
+.left-device-badge:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-refresh {
+  background: #ffffff;
+  color: #333333;
+  border: 1px solid #c0c0c0;
+  padding: 3px 8px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.btn-refresh:hover:not(:disabled) {
+  background: #f1f3f4;
+}
+
+.btn-refresh:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .filter-clickable-badge {
   cursor: pointer;
   user-select: none;
@@ -718,7 +1084,8 @@ const lineChartMinutesOptions = {
 .header-right-toolbar {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .modal-corner-badge {
@@ -745,6 +1112,15 @@ const lineChartMinutesOptions = {
   border-bottom: 1px solid #d0d7de;
   padding-bottom: 4px;
   width: 100%;
+}
+
+.sub-tabs-container {
+  margin-top: 4px;
+  margin-bottom: 8px;
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid #d0d7de;
+  padding-bottom: 4px;
 }
 
 .tab-btn {
@@ -779,6 +1155,7 @@ const lineChartMinutesOptions = {
 }
 
 .excel-sheet-wrapper {
+  margin-top: 0.5rem;
   overflow-x: auto;
   max-height: 60vh;
   overflow-y: auto;
@@ -793,7 +1170,8 @@ const lineChartMinutesOptions = {
   font-size: 11px;
 }
 
-.excel-cell-header, .excel-cell {
+.excel-cell-header,
+.excel-cell {
   border: 1px solid #d4d4d4;
   padding: 3px 6px;
   white-space: nowrap;
@@ -812,7 +1190,8 @@ const lineChartMinutesOptions = {
   border-bottom: 2px solid #bcbcbc;
 }
 
-.row-index-header, .row-index-cell {
+.row-index-header,
+.row-index-cell {
   background-color: #f3f3f3;
   color: #595959;
   text-align: center;
@@ -831,8 +1210,13 @@ const lineChartMinutesOptions = {
   background-color: #f1f3f4;
 }
 
-.font-bold { font-weight: bold; }
-.text-right { text-align: right; }
+.font-bold {
+  font-weight: bold;
+}
+
+.text-right {
+  text-align: right;
+}
 
 .badge {
   padding: 1px 6px;
@@ -841,12 +1225,37 @@ const lineChartMinutesOptions = {
   font-weight: 600;
 }
 
-.badge-code { background: #e8f0fe; color: #1a73e8; font-family: monospace; }
-.badge-problem { background: #fce8e6; color: #c5221f; }
-.badge-ttl { background: #f1f3f4; color: #202124; font-family: monospace; font-weight: bold; }
-.badge-ttl-total { background: #e8f0fe; color: #1a73e8; font-family: monospace; font-weight: bold; }
-.badge-status-solved { background: #dcfce7; color: #16a34a; border: 1px solid #bbf7d0; }
-.badge-status-pending { background: #fee2e2; color: #dc2626; border: 1px solid #fecaca; }
+.badge-code {
+  background: #e8f0fe;
+  color: #1a73e8;
+  font-family: monospace;
+}
+
+.badge-ttl {
+  background: #f1f3f4;
+  color: #202124;
+  font-family: monospace;
+  font-weight: bold;
+}
+
+.badge-ttl-total {
+  background: #e8f0fe;
+  color: #1a73e8;
+  font-family: monospace;
+  font-weight: bold;
+}
+
+.badge-status-solved {
+  background: #dcfce7;
+  color: #16a34a;
+  border: 1px solid #bbf7d0;
+}
+
+.badge-status-pending {
+  background: #fee2e2;
+  color: #dc2626;
+  border: 1px solid #fecaca;
+}
 
 .no-data {
   text-align: center;
@@ -902,14 +1311,45 @@ const lineChartMinutesOptions = {
   text-align: center;
 }
 
-.btn-primary { background-color: #1a73e8; color: #ffffff; }
-.btn-primary:hover { background-color: #1557b0; }
-.btn-secondary { background-color: #f3f3f3; color: #333333; border: 1px solid #a3a3a3; width: 100%; }
-.btn-secondary:hover { background-color: #e5e7eb; }
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background-color: #1a73e8;
+  color: #ffffff;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background-color: #1557b0;
+}
+
+.btn-secondary {
+  background-color: #f3f3f3;
+  color: #333333;
+  border: 1px solid #a3a3a3;
+  width: 100%;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background-color: #e5e7eb;
+}
+
+.resolved-info-banner {
+  background: #e8f0fe;
+  padding: 6px;
+  border-radius: 2px;
+  margin-bottom: 6px;
+  font-size: 11px;
+}
 
 .modal-overlay {
   position: fixed;
-  top: 0; left: 0; right: 0; bottom: 0;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
   background: rgba(0, 0, 0, 0.4);
   display: flex;
   justify-content: center;
@@ -932,7 +1372,8 @@ const lineChartMinutesOptions = {
 
 .btn-close-absolute {
   position: absolute;
-  top: 8px; right: 8px;
+  top: 8px;
+  right: 8px;
   background: transparent;
   border: none;
   font-size: 18px;
@@ -963,7 +1404,10 @@ const lineChartMinutesOptions = {
 
 .scanner-overlay-ui {
   position: absolute;
-  top: 0; left: 0; width: 100%; height: 100%;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
   display: flex;
   flex-direction: column;
@@ -972,7 +1416,8 @@ const lineChartMinutesOptions = {
 }
 
 .viewfinder-box {
-  width: 160px; height: 160px;
+  width: 160px;
+  height: 160px;
   border: 2px solid rgba(255, 255, 255, 0.7);
   border-radius: 4px;
   position: relative;
@@ -984,16 +1429,27 @@ const lineChartMinutesOptions = {
 
 .laser-line {
   position: absolute;
-  top: 0; left: 0; width: 100%; height: 2px;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 2px;
   background: #1a73e8;
   box-shadow: 0 0 6px #1a73e8;
   animation: scanLaser 2s infinite ease-in-out;
 }
 
 @keyframes scanLaser {
-  0% { top: 0%; }
-  50% { top: 98%; }
-  100% { top: 0%; }
+  0% {
+    top: 0%;
+  }
+
+  50% {
+    top: 98%;
+  }
+
+  100% {
+    top: 0%;
+  }
 }
 
 .scanner-instruction {
@@ -1027,7 +1483,9 @@ const lineChartMinutesOptions = {
   font-weight: bold;
 }
 
-.form-group input, .form-control, .select-input {
+.form-group input,
+.form-control,
+.select-input {
   padding: 4px 6px;
   border: 1px solid #c0c0c0;
   border-radius: 2px;
