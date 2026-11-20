@@ -48,7 +48,7 @@
       <div class="sub-tabs-container">
         <button type="button" class="tab-btn sub-tab-btn" :class="{ active: activeDailySubTab === 'table_charts' }"
           @click="activeDailySubTab = 'table_charts'">
-          NPT Table & Charts
+           Daily NPT Report
         </button>
         <button type="button" class="tab-btn sub-tab-btn" :class="{ active: activeDailySubTab === 'day_wise' }"
           @click="activeDailySubTab = 'day_wise'">
@@ -109,6 +109,16 @@
 
         <!-- Bar Charts Section -->
         <div class="charts-row" v-if="filteredRecords.length > 0">
+          <div class="chart-col">
+            <div class="chart-container-wrapper">
+              <div class="chart-header-title"> Daily Line Wise ( Loss Minute & Pcs)</div>
+              <div class="chart-canvas-box">
+                <Bar :data="DailyLineWiseBarChart" :options="barChartOptions" />
+              </div>
+            </div>
+          </div>
+        </div>
+            <div class="charts-row" v-if="filteredRecords.length > 0">
           <div class="chart-col">
             <div class="chart-container-wrapper">
               <div class="chart-header-title">QR Code Wise Breakdown (Minutes vs Taka)</div>
@@ -268,34 +278,15 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { QrcodeStream } from 'vue-qrcode-reader';
-import {
-  Chart as ChartJS,
-  Title,
-  Tooltip,
-  Legend,
-  BarElement,
-  LineElement,
-  PointElement,
-  CategoryScale,
-  LinearScale
-} from 'chart.js';
+import { Chart as ChartJS, Title, Tooltip, Legend, BarElement, CategoryScale, LinearScale } from 'chart.js';
+
+ChartJS.register(Title, Tooltip, Legend, BarElement, CategoryScale, LinearScale, ChartDataLabels);
+
 import ChartDataLabels from 'chartjs-plugin-datalabels';
 import { Bar, Line } from 'vue-chartjs';
 import { dbAPI } from '@/services/npt_qr_code_api.js';
 import { dbAPI as Unit_line_API } from '@/services/unit_line_api.js';
 import { dbAPI as Problem_Category_API } from '@/services/problem_category_api.js';
-
-ChartJS.register(
-  Title,
-  Tooltip,
-  Legend,
-  BarElement,
-  LineElement,
-  PointElement,
-  CategoryScale,
-  LinearScale,
-  ChartDataLabels
-);
 
 const SHEET_NAME = 'DailyNPTrecord';
 const HEADERS = [
@@ -827,6 +818,38 @@ const problemBarChartData = computed(() => {
     ]
   };
 });
+const DailyLineWiseBarChart= computed(() => {
+  const map = {};
+  filteredRecords.value.forEach((record) => {
+    const key = record.Line_No || 'Unassigned';
+    const timeVal = parseNumericMinutes(record.Ttl_Time);
+    if (!map[key]) {
+      map[key] = { mins: 0, Pcs: 0 };
+    }
+    map[key].mins += timeVal;
+    map[key].Pcs += timeVal / AVG_SMV;
+  });
+
+  const labels = Object.keys(map);
+  return {
+    labels,
+    datasets: [
+      {
+        label: 'Lost Minutes (mins)',
+        data: labels.map((k) => map[k].mins),
+        backgroundColor: '#1a73e8',
+        borderRadius: 2
+      },
+      {
+        label: 'Loss (Pcs)',
+        data: labels.map((k) => Number(map[k].Pcs.toFixed(2))),
+        backgroundColor: '#34a853',
+        borderRadius: 2
+      }
+    ]
+  };
+});
+
 
 const dayWiseBarChartData = computed(() => {
   const dayMap = {};
@@ -914,9 +937,25 @@ const monthlyMultiLineMinutesChartData = computed(() => {
 const barChartOptions = {
   responsive: true,
   maintainAspectRatio: false,
+  layout: {
+    padding: {
+      top: 18
+    }
+  },
   plugins: {
-    legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 10 } } },
-    datalabels: { display: false }
+    legend: {
+      position: 'bottom',
+      labels: { boxWidth: 12, font: { size: 10 } }
+    },
+    datalabels: {
+      display: true,
+      anchor: 'end',
+      align: 'top',
+      offset: 1,
+      color: '#333',
+      font: { weight: 'bold', size: 10 },
+      formatter: (value) => (value > 0 ? Math.round(value) : '')
+    }
   },
   scales: {
     x: { ticks: { font: { size: 9 } } },
