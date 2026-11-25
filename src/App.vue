@@ -48,7 +48,7 @@
       <div class="sub-tabs-container">
         <button type="button" class="tab-btn sub-tab-btn" :class="{ active: activeDailySubTab === 'table_charts' }"
           @click="activeDailySubTab = 'table_charts'">
-           Daily NPT Report
+          Daily NPT Report
         </button>
         <button type="button" class="tab-btn sub-tab-btn" :class="{ active: activeDailySubTab === 'day_wise' }"
           @click="activeDailySubTab = 'day_wise'">
@@ -117,13 +117,11 @@
               </div>
             </div>
           </div>
-        </div>
-            <div class="charts-row" v-if="filteredRecords.length > 0">
           <div class="chart-col">
             <div class="chart-container-wrapper">
-              <div class="chart-header-title">QR Code Wise Breakdown (Minutes vs Taka)</div>
+              <div class="chart-header-title"> Daily Department Wise ( Loss Minute & Pcs)</div>
               <div class="chart-canvas-box">
-                <Bar :data="problemBarChartData" :options="barChartOptions" />
+                <Bar :data="DailyDepartmentWiseBarChart" :options="barChartOptions" />
               </div>
             </div>
           </div>
@@ -818,11 +816,49 @@ const problemBarChartData = computed(() => {
     ]
   };
 });
-const DailyLineWiseBarChart= computed(() => {
+const DailyLineWiseBarChart = computed(() => {
   const map = {};
   filteredRecords.value.forEach((record) => {
     const key = record.Line_No || 'Unassigned';
     const timeVal = parseNumericMinutes(record.Ttl_Time);
+    if (!map[key]) {
+      map[key] = { mins: 0, Pcs: 0 };
+    }
+    map[key].mins += timeVal;
+    map[key].Pcs += timeVal / AVG_SMV;
+  });
+
+  const labels = Object.keys(map);
+  return {
+    labels,
+    datasets: [
+      {
+        label: 'Lost Minutes (mins)',
+        data: labels.map((k) => map[k].mins),
+        backgroundColor: '#1a73e8',
+        borderRadius: 2
+      },
+      {
+        label: 'Loss (Pcs)',
+        data: labels.map((k) => Number(map[k].Pcs.toFixed(2))),
+        backgroundColor: '#34a853',
+        borderRadius: 2
+      }
+    ]
+  };
+});
+const DailyDepartmentWiseBarChart = computed(() => {
+  const map = {};
+  filteredRecords.value.forEach((record) => {
+    const rawDept =
+      record.Responsible_Department ??
+      record.Department ??
+      record.department ??
+      'Unassigned';
+
+    const key = String(rawDept).trim() || 'Unassigned';
+    const timeVal = parseNumericMinutes(record.Ttl_Time);
+
     if (!map[key]) {
       map[key] = { mins: 0, Pcs: 0 };
     }
